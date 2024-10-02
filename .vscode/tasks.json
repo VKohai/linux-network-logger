@@ -1,0 +1,19 @@
+{
+    "tasks": [
+        {
+            "type": "cppbuild",
+            "label": "g++: build",
+            "command": "g++",
+            "args": [
+                "-g",
+                "${workspaceRoot}/src/main.cpp",
+                "-o",
+                "${workspaceRoot}/build/${workspaceFolderBasename}.out"
+            ],
+            "options": {
+                "cwd": "${fileDirname}"
+            }
+        }
+    ],
+    "version": "2.0.0"
+}
