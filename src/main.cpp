@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <string>
 #include <vector>
+#include <algorithm>
 #include <iomanip> // To use std::hex
 #include <sstream>
 
@@ -26,7 +27,7 @@ std::vector<std::string> getInterfaces()
     std::vector<std::string> interfaces;
 
     // Pointers for interface index structure
-    struct if_nameindex* if_nidxs, * intf;
+    struct if_nameindex *if_nidxs, *intf;
 
     // Get the list of network interfaces
     if_nidxs = if_nameindex();
@@ -49,7 +50,7 @@ std::vector<std::string> getInterfaces()
  * @param interfaces
  * @return std::vector<std::string>: list of ip
  */
-std::vector<std::string> getIP(const std::vector<std::string>& interfaces)
+std::vector<std::string> getIP(const std::vector<std::string> &interfaces)
 {
     std::vector<std::string> IPs;
 
@@ -65,14 +66,14 @@ std::vector<std::string> getIP(const std::vector<std::string>& interfaces)
     // Set the address family to IPv4
     ifr.ifr_addr.sa_family = AF_INET;
 
-    for (const auto& interface : interfaces)
+    for (const auto &interface : interfaces)
     {
         // Copy the interface name into the ifreq structure
         strncpy(ifr.ifr_name, interface.c_str(), IFNAMSIZ - 1);
 
         // Get the IP address using ioctl
         ioctl(fd, SIOCGIFADDR, &ifr);
-        auto ip = std::string(inet_ntoa(((struct sockaddr_in*)&ifr.ifr_addr)->sin_addr));
+        auto ip = std::string(inet_ntoa(((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr));
         IPs.push_back(ip);
     }
 
@@ -87,7 +88,7 @@ std::vector<std::string> getIP(const std::vector<std::string>& interfaces)
  * @param interfaces
  * @return std::vector<std::string>: list of mac addresses
  */
-std::vector<std::string> getMacAddress(const std::vector<std::string>& interfaces)
+std::vector<std::string> getMacAddress(const std::vector<std::string> &interfaces)
 {
     std::vector<std::string> macAddresses;
 
@@ -99,10 +100,10 @@ std::vector<std::string> getMacAddress(const std::vector<std::string>& interface
 
     // Create a socket for IPv4
     fd = socket(AF_INET, SOCK_DGRAM, 0);
-    for (const auto& interface : interfaces)
+    for (const auto &interface : interfaces)
     {
-        const char* iface = interface.c_str();
-        unsigned char* mac;
+        const char *iface = interface.c_str();
+        unsigned char *mac;
 
         // Set address family to IPv4
         ifr.ifr_addr.sa_family = AF_INET;
@@ -114,17 +115,18 @@ std::vector<std::string> getMacAddress(const std::vector<std::string>& interface
         ioctl(fd, SIOCGIFHWADDR, &ifr);
 
         // Extract MAC address from ifreq structure
-        mac = (unsigned char*)ifr.ifr_hwaddr.sa_data;
-        std::ostringstream oss;
+        mac = (unsigned char *)ifr.ifr_hwaddr.sa_data;
 
         // Format the MAC address as a hexadecimal string
-        oss << std::hex
-            << std::setw(2) << static_cast<int>(mac[0]) << ":"
-            << std::setw(2) << static_cast<int>(mac[1]) << ":"
-            << std::setw(2) << static_cast<int>(mac[2]) << ":"
-            << std::setw(2) << static_cast<int>(mac[3]) << ":"
-            << std::setw(2) << static_cast<int>(mac[4]) << ":"
-            << std::setw(2) << static_cast<int>(mac[5]);
+        std::ostringstream oss;
+        oss << std::hex;
+
+        const size_t macLength = sizeof(mac) / sizeof(mac[0]);
+        for (size_t i = 0; i < macLength - 1; ++i)
+        {
+            oss << std::setw(2) << static_cast<int>(mac[i]) << ":";
+        }
+        oss << std::setw(2) << static_cast<int>(mac[macLength - 1]);
 
         auto formattedMacAddress = oss.str();
         macAddresses.push_back(formattedMacAddress);
@@ -145,19 +147,44 @@ std::string getTimeNow()
     return buf;
 }
 
-std::string setFilename(const std::string& interface, const std::string& ip, const std::string& mac)
+std::string setRecordFormat(const std::string &interface, const std::string &ip, const std::string &mac)
 {
     std::string timestamp = getTimeNow();
     return timestamp + " | " + mac + " | " + ip + " | " + interface + ".log";
 }
 
-void log(const std::string& path, const std::string& data)
+std::vector<std::string> parseRecordLog(const std::string &logMessage, char delimeter = '|')
 {
-    std::ofstream logFile(path);
+    std::vector<std::string> logData;
+
+    size_t left = 0, right = 0;
+    std::string data;
+
+    // Parse a record
+    for (; right < logMessage.length(); ++right)
+    {
+        if (logMessage[right] == delimeter)
+        {
+            data = logMessage.substr(left, right - left);
+            data.erase(std::remove_if(data.begin(), data.end(), ::isspace), data.end());
+            logData.push_back(data);
+            left = ++right;
+        }
+    }
+
+    data = logMessage.substr(left);
+    data.erase(0, 1);
+
+    logData.push_back(data);
+    return logData;
+}
+
+void log(const std::string &path, const std::string &data)
+{
+    std::ofstream logFile(path, std::ios::app);
     if (logFile.is_open())
     {
-        logFile << data;
-        std::cout << "Logged [Info]: " << path;
+        logFile << data << "\n";
         logFile.close();
     }
     else
@@ -166,28 +193,33 @@ void log(const std::string& path, const std::string& data)
     }
 }
 
-bool checkLoggedIP(const std::string& path, const std::string& ip)
+bool checkLoggedIP(const std::string &path, const std::string &ip)
 {
-    auto isIpEqual = [ip](const std::string& filename)
+    auto isIpEqual = [ip](const std::string &filename)
+    {
+        std::ifstream logFile(filename);
+        if (logFile.is_open())
         {
-            std::ifstream logFile(filename);
-            if (logFile.is_open())
+            std::string record;
+            while (std::getline(logFile, record))
             {
-                std::string line;
-                logFile >> line;
-                return line == ip;
+                auto parsedRecord = parseRecordLog(record);
+                if (parsedRecord[2] == ip)
+                {
+                    return true;
+                }
             }
-            return false;
-        };
+        }
+        return false;
+    };
 
-    for (const auto& entry : std::filesystem::directory_iterator(path))
+    for (const auto &entry : std::filesystem::directory_iterator(path))
     {
         if (isIpEqual(entry.path()))
         {
             return true;
         }
     }
-
     return false;
 }
 
@@ -197,13 +229,13 @@ int main()
     auto ips = getIP(interfaces);
     auto macAddress = getMacAddress(interfaces);
 
+    std::string fileName = "network.log";
     for (size_t i = 0; i < interfaces.size(); ++i)
     {
-        auto filename = setFilename(interfaces[i], ips[i], macAddress[i]);
-        if (!checkLoggedIP("./", ips[i]))
-        {
-            log(filename, ips[i]);
-        }
+        auto record = setRecordFormat(interfaces[i], ips[i], macAddress[i]);
+        if (checkLoggedIP("./../logs/", ips[i]))
+            break;
+        log("./../logs/" + fileName, record);
     }
     return 0;
 }
